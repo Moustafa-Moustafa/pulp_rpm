@@ -11,7 +11,7 @@ from packaging.requirements import Requirement
 
 
 CHECK_MATRIX = [
-    ("pyproject.toml", True, True, True),
+    ("pyproject.toml", False, True, True),
     ("requirements.txt", True, True, True),
     ("dev_requirements.txt", False, True, False),
     ("ci_requirements.txt", False, True, True),

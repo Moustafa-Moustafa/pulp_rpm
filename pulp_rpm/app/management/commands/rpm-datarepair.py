@@ -83,34 +83,41 @@ class Command(BaseCommand):
     def repair_4073(self, dry_run):
         """Perform data repair for issue #4073.
 
-        For each updated ContentArtifact, print:
-            {ca.pkg_uuid} {ca_uuid} {old_relpath} {new_relpath}
+        Creates a NEW ContentArtifact with the NVRA relative_path pointing to
+        the same artifact, preserving the original path for backwards compatibility.
+
+        For each created ContentArtifact, print:
+            {pkg_uuid} {old_relpath} -> {new_relpath}
         """
-        update_count = 0
+        create_count = 0
         batch = []
         batch_msgs = []
 
         def process_batch():
-            nonlocal update_count, batch, batch_msgs
+            nonlocal create_count, batch, batch_msgs
             if not dry_run:
-                ContentArtifact.objects.bulk_update(batch, fields=["relative_path"])
+                ContentArtifact.objects.bulk_create(batch, ignore_conflicts=True)
             for msg in batch_msgs:
                 self.stdout.write(msg)
             self.stdout.flush()
-            update_count += len(batch)
+            create_count += len(batch)
             batch.clear()
             batch_msgs.clear()
 
         def add_to_batch(ca, pkg):
-            original_relpath = ca.relative_path
-            ca.relative_path = pkg.filename
-            batch.append(ca)
+            # Create a new ContentArtifact with the NVRA filename
+            # pointing to the same artifact as the original
+            new_ca = ContentArtifact(
+                content=ca.content,
+                artifact=ca.artifact,
+                relative_path=pkg.filename,
+            )
+            batch.append(new_ca)
             batch_msgs.append(
-                UPDATE_MSG.format(
+                CREATE_MSG.format(
                     pkg_uuid=str(pkg.pk),
-                    ca_uuid=str(ca.pk),
-                    old_relpath=original_relpath,
-                    new_relpath=ca.relative_path,
+                    old_relpath=ca.relative_path,
+                    new_relpath=pkg.filename,
                 )
             )
 
@@ -127,12 +134,16 @@ class Command(BaseCommand):
             )
         ).exclude(location_href__endswith=F("computed_filename"))
 
-        UPDATE_MSG = "{pkg_uuid!r} {ca_uuid!r} {old_relpath!r} {new_relpath!r}"
+        CREATE_MSG = "{pkg_uuid!r} {old_relpath!r} -> {new_relpath!r}"
         for pkg in bad_packages.iterator():
-            for ca in pkg.contentartifact_set.exclude(relative_path=pkg.filename):
-                add_to_batch(ca, pkg)
-                if len(batch) > 500:
-                    process_batch()
+            # Only process if the NVRA path doesn't already exist
+            existing_nvra = pkg.contentartifact_set.filter(relative_path=pkg.filename).exists()
+            if not existing_nvra:
+                original_ca = pkg.contentartifact_set.first()
+                if original_ca:
+                    add_to_batch(original_ca, pkg)
+                    if len(batch) > 500:
+                        process_batch()
         if batch:  # handle remaining
             process_batch()
-        self.stdout.write(f"Updated {update_count} records")
+        self.stdout.write(f"Created {create_count} new ContentArtifact records")
